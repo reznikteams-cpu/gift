@@ -3,8 +3,8 @@ import os
 from datetime import datetime
 from urllib.parse import parse_qs
 
-import psycopg2
-from psycopg2 import pool
+import psycopg
+from psycopg_pool import ConnectionPool
 
 from telegram import (
     Update,
