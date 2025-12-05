@@ -38,7 +38,7 @@ ADMIN_IDS = {
     if x.strip().isdigit()
 }
 
-DB_POOL: pool.SimpleConnectionPool | None = None
+DB_POOL: ConnectionPool | None = None
 
 
 # ----------------- ИНИЦИАЛИЗАЦИЯ БД -----------------
@@ -51,32 +51,33 @@ def init_db():
     if not DATABASE_URL:
         raise RuntimeError("DATABASE_URL env var is not set")
 
-    DB_POOL = pool.SimpleConnectionPool(1, 5, DATABASE_URL)
+    DB_POOL = ConnectionPool(
+        conninfo=DATABASE_URL,
+        min_size=1,
+        max_size=5,
+    )
 
-    conn = DB_POOL.getconn()
-    try:
-        with conn:
-            with conn.cursor() as cur:
-                cur.execute(
-                    """
-                    CREATE TABLE IF NOT EXISTS users (
-                        user_id BIGINT PRIMARY KEY,
-                        username TEXT,
-                        first_name TEXT,
-                        last_name TEXT,
-                        is_gift_given BOOLEAN DEFAULT FALSE,
-                        traffic_source TEXT,
-                        utm_source TEXT,
-                        utm_medium TEXT,
-                        utm_campaign TEXT,
-                        created_at TIMESTAMPTZ,
-                        updated_at TIMESTAMPTZ
-                    );
-                    """
-                )
-        logger.info("Database initialized")
-    finally:
-        DB_POOL.putconn(conn)
+    # создаём таблицу
+    with DB_POOL.connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS users (
+                    user_id BIGINT PRIMARY KEY,
+                    username TEXT,
+                    first_name TEXT,
+                    last_name TEXT,
+                    is_gift_given BOOLEAN DEFAULT FALSE,
+                    traffic_source TEXT,
+                    utm_source TEXT,
+                    utm_medium TEXT,
+                    utm_campaign TEXT,
+                    created_at TIMESTAMPTZ,
+                    updated_at TIMESTAMPTZ
+                );
+                """
+            )
+    logger.info("Database initialized")
 
 
 # ----------------- ПАРСИНГ ТРАФИКА И UTM -----------------
@@ -130,52 +131,48 @@ def upsert_user(
     if DB_POOL is None:
         raise RuntimeError("DB_POOL is not initialized")
 
-    conn = DB_POOL.getconn()
-    try:
-        now = datetime.utcnow()
-        with conn:
-            with conn.cursor() as cur:
-                cur.execute(
-                    """
-                    INSERT INTO users (
-                        user_id,
-                        username,
-                        first_name,
-                        last_name,
-                        is_gift_given,
-                        traffic_source,
-                        utm_source,
-                        utm_medium,
-                        utm_campaign,
-                        created_at,
-                        updated_at
-                    )
-                    VALUES (%s, %s, %s, %s, FALSE, %s, %s, %s, %s, %s, %s)
-                    ON CONFLICT (user_id) DO UPDATE SET
-                        username   = EXCLUDED.username,
-                        first_name = EXCLUDED.first_name,
-                        last_name  = EXCLUDED.last_name,
-                        updated_at = EXCLUDED.updated_at,
-                        traffic_source = COALESCE(EXCLUDED.traffic_source, users.traffic_source),
-                        utm_source     = COALESCE(EXCLUDED.utm_source, users.utm_source),
-                        utm_medium     = COALESCE(EXCLUDED.utm_medium, users.utm_medium),
-                        utm_campaign   = COALESCE(EXCLUDED.utm_campaign, users.utm_campaign);
-                    """,
-                    (
-                        user.id,
-                        user.username,
-                        user.first_name,
-                        user.last_name,
-                        traffic_source,
-                        utm_source,
-                        utm_medium,
-                        utm_campaign,
-                        now,
-                        now,
-                    ),
+    now = datetime.utcnow()
+    with DB_POOL.connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO users (
+                    user_id,
+                    username,
+                    first_name,
+                    last_name,
+                    is_gift_given,
+                    traffic_source,
+                    utm_source,
+                    utm_medium,
+                    utm_campaign,
+                    created_at,
+                    updated_at
                 )
-    finally:
-        DB_POOL.putconn(conn)
+                VALUES (%s, %s, %s, %s, FALSE, %s, %s, %s, %s, %s, %s)
+                ON CONFLICT (user_id) DO UPDATE SET
+                    username   = EXCLUDED.username,
+                    first_name = EXCLUDED.first_name,
+                    last_name  = EXCLUDED.last_name,
+                    updated_at = EXCLUDED.updated_at,
+                    traffic_source = COALESCE(EXCLUDED.traffic_source, users.traffic_source),
+                    utm_source     = COALESCE(EXCLUDED.utm_source, users.utm_source),
+                    utm_medium     = COALESCE(EXCLUDED.utm_medium, users.utm_medium),
+                    utm_campaign   = COALESCE(EXCLUDED.utm_campaign, users.utm_campaign);
+                """,
+                (
+                    user.id,
+                    user.username,
+                    user.first_name,
+                    user.last_name,
+                    traffic_source,
+                    utm_source,
+                    utm_medium,
+                    utm_campaign,
+                    now,
+                    now,
+                ),
+            )
 
 
 def has_gift(user_id: int) -> bool:
@@ -185,20 +182,16 @@ def has_gift(user_id: int) -> bool:
     if DB_POOL is None:
         raise RuntimeError("DB_POOL is not initialized")
 
-    conn = DB_POOL.getconn()
-    try:
-        with conn:
-            with conn.cursor() as cur:
-                cur.execute(
-                    "SELECT is_gift_given FROM users WHERE user_id = %s;",
-                    (user_id,),
-                )
-                row = cur.fetchone()
-                if row is None:
-                    return False
-                return bool(row[0])
-    finally:
-        DB_POOL.putconn(conn)
+    with DB_POOL.connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT is_gift_given FROM users WHERE user_id = %s;",
+                (user_id,),
+            )
+            row = cur.fetchone()
+            if row is None:
+                return False
+            return bool(row[0])
 
 
 def mark_gift_given(user_id: int):
@@ -208,21 +201,17 @@ def mark_gift_given(user_id: int):
     if DB_POOL is None:
         raise RuntimeError("DB_POOL is not initialized")
 
-    conn = DB_POOL.getconn()
-    try:
-        now = datetime.utcnow()
-        with conn:
-            with conn.cursor() as cur:
-                cur.execute(
-                    """
-                    UPDATE users
-                    SET is_gift_given = TRUE, updated_at = %s
-                    WHERE user_id = %s;
-                    """,
-                    (now, user_id),
-                )
-    finally:
-        DB_POOL.putconn(conn)
+    now = datetime.utcnow()
+    with DB_POOL.connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                UPDATE users
+                SET is_gift_given = TRUE, updated_at = %s
+                WHERE user_id = %s;
+                """,
+                (now, user_id),
+            )
 
 
 # ----------------- СТАТИСТИКА -----------------
@@ -233,40 +222,36 @@ def get_stats():
     if DB_POOL is None:
         raise RuntimeError("DB_POOL is not initialized")
 
-    conn = DB_POOL.getconn()
-    try:
-        with conn:
-            with conn.cursor() as cur:
-                # Общее количество пользователей
-                cur.execute("SELECT COUNT(*) FROM users;")
-                total_users = cur.fetchone()[0] or 0
+    with DB_POOL.connection() as conn:
+        with conn.cursor() as cur:
+            # Общее количество пользователей
+            cur.execute("SELECT COUNT(*) FROM users;")
+            total_users = cur.fetchone()[0] or 0
 
-                # Сколько получили подарок
-                cur.execute("SELECT COUNT(*) FROM users WHERE is_gift_given = TRUE;")
-                gifted_users = cur.fetchone()[0] or 0
+            # Сколько получили подарок
+            cur.execute("SELECT COUNT(*) FROM users WHERE is_gift_given = TRUE;")
+            gifted_users = cur.fetchone()[0] or 0
 
-                # Топ источников
-                cur.execute(
-                    """
-                    SELECT
-                        COALESCE(traffic_source, 'unknown') AS src,
-                        COUNT(*) AS total,
-                        SUM(CASE WHEN is_gift_given THEN 1 ELSE 0 END) AS gifted
-                    FROM users
-                    GROUP BY src
-                    ORDER BY total DESC
-                    LIMIT 10;
-                    """
-                )
-                rows = cur.fetchall()
+            # Топ источников
+            cur.execute(
+                """
+                SELECT
+                    COALESCE(traffic_source, 'unknown') AS src,
+                    COUNT(*) AS total,
+                    SUM(CASE WHEN is_gift_given THEN 1 ELSE 0 END) AS gifted
+                FROM users
+                GROUP BY src
+                ORDER BY total DESC
+                LIMIT 10;
+                """
+            )
+            rows = cur.fetchall()
 
-        return {
-            "total_users": total_users,
-            "gifted_users": gifted_users,
-            "sources": rows,
-        }
-    finally:
-        DB_POOL.putconn(conn)
+    return {
+        "total_users": total_users,
+        "gifted_users": gifted_users,
+        "sources": rows,
+    }
 
 
 # ----------------- ПРОВЕРКА ПОДПИСКИ НА КАНАЛ -----------------
