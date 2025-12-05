@@ -1,2 +1,2 @@
 python-telegram-bot==20.7
-psycopg[binary,pool]==3.2.1
+psycopg[binary,pool]==3.3.1
